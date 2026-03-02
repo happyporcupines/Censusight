@@ -83,8 +83,37 @@ With Censusight, Maya uploads her address file, runs cleaning, picks year/datase
 - The app (`app.r` + `scripts/R/*`) consumes all of the above artifacts at runtime.
 
 ---
+## What you need to run the app for testing
+To get Censusight up and running on your local machine for testing, you’ll need to have the following ready to go:
 
-## Testing session (draft): manual app validation using provided testing data
+1. R and RStudio
+The app is built using the R programming language.
+
+Install R: Download from CRAN.
+
+Install RStudio: The best "workbench" for running this app. Download the free Desktop version from Posit.
+
+2. Census API Key
+I'm giving you the right to use the census API key currently in the code to test, but try not to max out the API call limit. Count how many calls you've used (the call counter resets when you refresh, but your technical count does not, so sum counts between refreshes). 
+
+3. Required R Packages
+Once R is installed, open RStudio and run the following command in the Console to grab all the necessary libraries:
+
+R
+install.packages(c("shiny", "DBI", "RSQLite", "bslib", "shinyWidgets", 
+                   "tidycensus", "sf", "dplyr", "httr", "tidyverse"))
+                   
+4. System Dependencies (Spatial Data)
+Because the app handles maps and GEOIDs (spatial data), your computer needs a few background drivers.
+
+Windows: You're usually good to go!
+
+macOS: You may need Homebrew to install gdal (the "translator" for map data) if the sf package doesn't install correctly.
+
+Linux: Ensure libgdal-dev, libproj-dev, and libudunits2-dev are installed.
+
+
+## Testing session: manual app validation using provided testing data
 
 This is a starter test session you can run repeatedly while developing.
 
