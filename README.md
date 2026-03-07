@@ -147,6 +147,8 @@ shiny::runApp(".")
 
 ### 4) Upload test CSV and run cleaning
 
+**NOTE:** Please do not use the "UPDATE CENSUS DATA" feature yet since that feature is heavy on the API's call limit.
+
 - Upload `testing/real_wi_test_addresses.csv`.
 - Run the address check/processing action.
 - Expected outcomes:
