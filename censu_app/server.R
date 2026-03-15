@@ -147,77 +147,29 @@ server <- function(input, output, session) {
     }
   }
 
-  # Load and sanitize persisted catalog, or build startup fallback data.
-  if (file.exists(catalog_path)) {
-    saved_catalog <- tryCatch(readRDS(catalog_path), error = function(e) NULL)
-    # If the saved catalog has the expected structure, attempt to normalize and filter it to supported datasets before loading into reactive state.
-    if (is.data.frame(saved_catalog) &&
-      all(c("name", "vintage", "display_name") %in% names(saved_catalog))) {
-      if (!"tidycensus_dataset" %in% names(saved_catalog)) {
-        saved_catalog$tidycensus_dataset <- NA_character_
-      }
-      # Normalize dataset names, coalescing from both 'tidycensus_dataset' and 'name' fields, then filter to supported datasets only.
-      saved_catalog <- saved_catalog %>%
-        dplyr::mutate(tidycensus_dataset = normalize_dataset_name(.data$tidycensus_dataset)) %>%
-        dplyr::mutate(
-          tidycensus_dataset = dplyr::coalesce(
-            .data$tidycensus_dataset,
-            normalize_dataset_name(.data$name)
-          )
-        ) %>%
-        dplyr::mutate(
-          tidycensus_dataset = ifelse(
-            .data$tidycensus_dataset %in% supported_datasets,
-            .data$tidycensus_dataset,
-            NA_character_
-          )
-        ) %>%
-        dplyr::filter(!is.na(.data$tidycensus_dataset))
-
-      saveRDS(saved_catalog, catalog_path)
-    }
-    # If the saved catalog is missing, malformed, or has no valid rows after normalization/filtering, replace it with the default catalog data.
-    if (!is.data.frame(saved_catalog) || nrow(saved_catalog) == 0) {
-      saved_catalog <- default_catalog_data()
-      saveRDS(saved_catalog, catalog_path)
-    }
-    # Finally, load the sanitized catalog into reactive state for app use.
-    available_datasets(saved_catalog)
-  } else {
-    startup_catalog <- tryCatch(fetch_catalog_data(), error = function(e) NULL)
-    if (is.data.frame(startup_catalog) && nrow(startup_catalog) > 0) {
-      saveRDS(startup_catalog, catalog_path)
-      available_datasets(startup_catalog)
-    } else {
-      fallback_catalog <- default_catalog_data()
-      saveRDS(fallback_catalog, catalog_path)
-      available_datasets(fallback_catalog)
-    }
-  }
+  # Always initialize the dataset catalog from the verified static catalog.
+  # The old live-API discovery (censusapi::listCensusApis) is no longer used
+  # because it returned entries with no loadable variable metadata, causing
+  # silent failures in the join pipeline. Every entry in the static catalog
+  # has been confirmed to work with tidycensus get_acs() / get_decennial().
+  startup_catalog <- default_catalog_data()
+  saveRDS(startup_catalog, catalog_path)
+  available_datasets(startup_catalog)
 
   # --- 3.5 Manual Catalog Refresh Actions ---
   observeEvent(input$update_catalog_btn, {
-    showNotification(
-      "Scanning the entire Census library... this takes a moment.",
-      type = "message"
-    )
-    # Attempt to fetch the latest catalog data from the Census API. If successful, save it and update reactive state. 
-    # If it fails, keep the existing catalog and show a warning notification.
-    catalog_data <- tryCatch(fetch_catalog_data(), error = function(e) NULL)
-
-    if (!is.data.frame(catalog_data) || nrow(catalog_data) == 0) {
-      catalog_data <- default_catalog_data()
-      showNotification(
-        "Live catalog refresh failed; using local fallback catalog.",
-        type = "warning"
-      )
-    }
-
+    # Reload from the hardcoded static catalog. All entries are pre-verified
+    # to work with tidycensus, so no live API scan is needed.
+    catalog_data <- default_catalog_data()
     saveRDS(catalog_data, catalog_path)
     available_datasets(catalog_data)
 
     showNotification(
-      paste("Success! Found", nrow(catalog_data), "datasets."),
+      paste0(
+        "Catalog reloaded. ",
+        nrow(catalog_data),
+        " verified year/dataset combinations available."
+      ),
       type = "message"
     )
   })

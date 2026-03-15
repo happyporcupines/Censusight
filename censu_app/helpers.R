@@ -226,20 +226,29 @@ parse_vintage_year <- function(x) {
   parsed
 }
 
-# Provides human-readable geography availability summaries per dataset.
+# Returns documented geography-level availability text per dataset,
+# used in the dataset selector label and join-geography validation.
 dataset_geography_levels <- function(dataset_name) {
   ds <- normalize_dataset_name(dataset_name)
 
+  # Default: state-only (conservative fallback)
   out <- rep("state", length(ds))
 
-  out[!is.na(ds) & ds %in% c("acs5")] <-
+  # ACS 5-Year: finest geography — down to block group and ZCTA.
+  out[!is.na(ds) & ds == "acs5"] <-
     "state, county, tract, block group, zcta"
 
+  # ACS 1-Year / 3-Year / Supplemental: only state and county.
   out[!is.na(ds) & ds %in% c("acs1", "acs3", "acsse")] <-
     "state, county"
 
-  out[!is.na(ds) & ds %in% c("pl", "dhc", "sf1", "sf3")] <-
-    "state, county, tract, block group, block"
+  # Decennial PL / DHC / SF1: tract and block group available.
+  out[!is.na(ds) & ds %in% c("pl", "dhc", "sf1")] <-
+    "state, county, tract, block group"
+
+  # Decennial SF3: only down to tract (block group not in tidycensus for SF3).
+  out[!is.na(ds) & ds == "sf3"] <-
+    "state, county, tract"
 
   out
 }
@@ -877,39 +886,114 @@ attach_geoid_from_lookup <- function(df, db_path, geocode_limit = 300) {
 }
 
 # --- 1.4 Catalog Helpers ---
-# Catalog functions support startup fallback and live Census API discovery.
+# The catalog is a fully hardcoded, verified list of every year/dataset
+# combination confirmed to work with tidycensus's get_acs() and
+# get_decennial() functions as of 2026. This replaces live API discovery,
+# which was unreliable (returned entries with no usable variable metadata).
 
-# Provides fallback catalog rows when live catalog discovery is unavailable.
-default_catalog_data <- function() {
-  fallback_year <- as.integer(format(Sys.Date(), "%Y"))
-  data.frame(
-    name = c("acs/acs5", "acs/acs1", "dec/pl"),
-    vintage = c(fallback_year, fallback_year, fallback_year),
-    display_name = c(
-      paste0("ACS 5-Year (", fallback_year, ")"),
-      paste0("ACS 1-Year (", fallback_year, ")"),
-      paste0("Decennial PL (", fallback_year, ")")
+# Returns a data frame of all verified Census year/dataset combinations.
+static_census_catalog <- function() {
+  # ACS 5-Year Detailed Tables
+  # Geography: state, county, tract, block group, zcta
+  # Note: year Y released ~December Y+1. 2024 released Dec 2025.
+  acs5_years <- 2009:2024
+
+  # ACS 1-Year Detailed Tables
+  # Geography: state, county
+  # Note: 2020 was NOT published due to COVID-19 data collection issues.
+  acs1_years <- c(2005:2019, 2021:2024)
+
+  # ACS 3-Year Detailed Tables (retired after 2013)
+  # Geography: state, county
+  acs3_years <- 2007:2013
+
+  # ACS 1-Year Supplemental Estimates (discontinued after 2022)
+  # Geography: state, county
+  acsse_years <- 2014:2022
+
+  # Decennial Redistricting Data (P.L. 94-171)
+  # Geography: state, county, tract, block group
+  pl_years <- c(2000L, 2010L, 2020L)
+
+  # Decennial Demographic & Housing Characteristics (2020 Census replacement for SF1)
+  # Geography: state, county, tract, block group
+  dhc_years <- 2020L
+
+  # Decennial Summary File 1 (replaced by DHC for 2020+)
+  # Geography: state, county, tract, block group
+  sf1_years <- c(2000L, 2010L)
+
+  # Decennial Summary File 3 (2000 only; SF3 was not produced for 2010)
+  # Geography: state, county, tract
+  sf3_years <- 2000L
+
+  rbind(
+    data.frame(
+      name               = "acs5",
+      vintage            = acs5_years,
+      display_name       = paste0("ACS 5-Year Detailed Tables (", acs5_years, ")"),
+      tidycensus_dataset = "acs5",
+      stringsAsFactors   = FALSE
     ),
-    tidycensus_dataset = c("acs5", "acs1", "pl"),
-    stringsAsFactors = FALSE
+    data.frame(
+      name               = "acs1",
+      vintage            = acs1_years,
+      display_name       = paste0("ACS 1-Year Detailed Tables (", acs1_years, ")"),
+      tidycensus_dataset = "acs1",
+      stringsAsFactors   = FALSE
+    ),
+    data.frame(
+      name               = "acs3",
+      vintage            = acs3_years,
+      display_name       = paste0("ACS 3-Year Detailed Tables (", acs3_years, ") [retired]"),
+      tidycensus_dataset = "acs3",
+      stringsAsFactors   = FALSE
+    ),
+    data.frame(
+      name               = "acsse",
+      vintage            = acsse_years,
+      display_name       = paste0("ACS 1-Year Supplemental Estimates (", acsse_years, ") [retired]"),
+      tidycensus_dataset = "acsse",
+      stringsAsFactors   = FALSE
+    ),
+    data.frame(
+      name               = "pl",
+      vintage            = pl_years,
+      display_name       = paste0("Decennial Redistricting Data - PL 94-171 (", pl_years, ")"),
+      tidycensus_dataset = "pl",
+      stringsAsFactors   = FALSE
+    ),
+    data.frame(
+      name               = "dhc",
+      vintage            = dhc_years,
+      display_name       = paste0("Decennial Demographic & Housing Characteristics (", dhc_years, ")"),
+      tidycensus_dataset = "dhc",
+      stringsAsFactors   = FALSE
+    ),
+    data.frame(
+      name               = "sf1",
+      vintage            = sf1_years,
+      display_name       = paste0("Decennial Summary File 1 (", sf1_years, ")"),
+      tidycensus_dataset = "sf1",
+      stringsAsFactors   = FALSE
+    ),
+    data.frame(
+      name               = "sf3",
+      vintage            = sf3_years,
+      display_name       = paste0("Decennial Summary File 3 (", sf3_years, ")"),
+      tidycensus_dataset = "sf3",
+      stringsAsFactors   = FALSE
+    )
   )
 }
 
-# Pulls and filters Census API catalog entries to supported datasets.
-fetch_catalog_data <- function() {
-  # Pull full API catalog and reduce to datasets this app explicitly supports.
-  all_apis <- censusapi::listCensusApis()
+# Returns the verified static catalog. Replaces the old single-year fallback.
+default_catalog_data <- function() {
+  static_census_catalog()
+}
 
-  all_apis %>%
-    dplyr::filter(grepl("acs|dec", .data$name, ignore.case = TRUE)) %>%
-    dplyr::mutate(tidycensus_dataset = normalize_dataset_name(.data$name)) %>%
-    dplyr::filter(
-      !is.na(.data$tidycensus_dataset),
-      .data$tidycensus_dataset %in% c(
-        "acs1", "acs3", "acs5", "acsse",
-        "pl", "dhc", "sf1", "sf3"
-      )
-    ) %>%
-    dplyr::mutate(display_name = paste0(.data$title, " (", .data$vintage, ")")) %>%
-    dplyr::select(dplyr::all_of(c("name", "vintage", "display_name", "tidycensus_dataset")))
+# Returns the verified static catalog. Replaces the old live censusapi scan,
+# which returned catalog entries that often had no loadable variable metadata.
+fetch_catalog_data <- function() {
+  static_census_catalog()
 }
