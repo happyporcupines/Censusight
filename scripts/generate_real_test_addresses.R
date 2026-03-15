@@ -16,6 +16,20 @@ suppressPackageStartupMessages({
 
 args <- commandArgs(trailingOnly = TRUE)
 
+resolve_project_root <- function() {
+  cmd_args <- commandArgs(trailingOnly = FALSE)
+  file_arg <- grep("^--file=", cmd_args, value = TRUE)
+
+  if (length(file_arg) >= 1) {
+    script_path <- sub("^--file=", "", file_arg[[1]])
+    return(normalizePath(file.path(dirname(script_path), ".."), winslash = "/", mustWork = FALSE))
+  }
+
+  normalizePath(file.path(getwd(), ".."), winslash = "/", mustWork = FALSE)
+}
+
+project_root <- resolve_project_root()
+
 get_arg <- function(flag, default = NULL) {
   idx <- which(args == flag)
   if (length(idx) == 0 || idx[1] == length(args)) return(default)
@@ -24,7 +38,7 @@ get_arg <- function(flag, default = NULL) {
 
 n_rows <- as.integer(get_arg("--n", "200"))
 out_path <- get_arg("--out", file.path("testing", "real_wi_test_addresses.csv"))
-db_path <- get_arg("--db", file.path("data", "address_geoid.sqlite"))
+db_path <- get_arg("--db", file.path(project_root, "censu_app", "data", "address_geoid.sqlite"))
 
 if (is.na(n_rows) || n_rows < 1) {
   stop("--n must be a positive integer")

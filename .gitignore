@@ -1,0 +1,8 @@
+# Large SQLite databases (exceed GitHub's 100 MB file limit)
+*.sqlite
+*.db
+
+# R session artifacts
+.Rhistory
+.RData
+.Rproj.user/
