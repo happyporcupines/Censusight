@@ -297,7 +297,32 @@ server <- function(input, output, session) {
       still_bad <- character(0)
       keep_rows <- rep(FALSE, nrow(data_for_year))
 
-      for (i in seq_len(nrow(data_for_year))) {
+      # Only open a progress bar when at least one dataset actually needs live-fetching.
+      any_needs_fetch <- any(vapply(seq_len(nrow(data_for_year)), function(i) {
+        ds_norm <- normalize_dataset_name(data_for_year$tidycensus_dataset[i])
+        if (is.na(ds_norm)) return(FALSE)
+        key <- paste(selected_year, ds_norm, sep = "|")
+        cached <- existing_cache[[key]]
+        !(is.data.frame(cached) && nrow(cached) > 0)
+      }, logical(1)))
+
+      n_ds <- nrow(data_for_year)
+      catalog_prog <- if (any_needs_fetch) {
+        p <- shiny::Progress$new(session, min = 0, max = n_ds)
+        p$set(
+          message = paste0("Loading variable catalog for ", selected_year, "..."),
+          value = 0
+        )
+        p
+      } else {
+        NULL
+      }
+
+      for (i in seq_len(n_ds)) {
+        if (!is.null(catalog_prog)) {
+          catalog_prog$set(value = i, detail = paste0("Dataset ", i, " of ", n_ds))
+        }
+
         ds_norm <- normalize_dataset_name(data_for_year$tidycensus_dataset[i])
         key <- paste(selected_year, ds_norm, sep = "|")
 
@@ -324,6 +349,9 @@ server <- function(input, output, session) {
           still_bad <- c(still_bad, key)
         }
       }
+
+      if (!is.null(catalog_prog)) catalog_prog$close()
+
       # Update the variable cache and invalid dataset keys based on the results of metadata loading attempts
       # Then filter the catalog data to only include datasets with valid metadata before updating the dataset selection input.
       variable_cache(existing_cache)
@@ -409,12 +437,20 @@ server <- function(input, output, session) {
       return(fill_dataset_geography(ensure_variable_columns(existing_cache[[cache_key]]), ds))
     }
 
+    var_prog <- shiny::Progress$new(session, min = 0, max = 1)
+    on.exit(var_prog$close(), add = TRUE)
+    var_prog$set(
+      message = paste0("Loading ", ds, " variables (", year_raw, ")..."),
+      value = 0.1,
+      detail = "Contacting Census API..."
+    )
     tryCatch(
       {
         vars <- fill_dataset_geography(
           ensure_variable_columns(load_variables(year_raw, ds, cache = TRUE)),
           ds
         )
+        var_prog$set(value = 0.9, detail = "Caching metadata...")
         if (is.data.frame(vars) && nrow(vars) > 0) {
           existing_cache[[cache_key]] <- vars
           variable_cache(existing_cache)
@@ -428,6 +464,7 @@ server <- function(input, output, session) {
           bad_keys <- isolate(invalid_dataset_keys())
           invalid_dataset_keys(unique(c(bad_keys, cache_key)))
         }
+        var_prog$set(value = 1.0)
         vars
       },
       error = function(e) {
@@ -1096,50 +1133,56 @@ server <- function(input, output, session) {
     # Entering process mode clears any previous variable preview snapshot.
     APP_STATE$preview_selection <- NULL
 
-    if (input$auto_clean) {
-      # Clean and split rows into matched + error buckets.
-      results <- clean_addresses(df)
-      df_to_save <- results$good_data
-      APP_STATE$error_data <- results$bad_data
-      APP_STATE$processed_data <- df_to_save
+    withProgress(message = "Processing uploaded data...", value = 0, min = 0, max = 1, {
+      if (input$auto_clean) {
+        setProgress(0.2, detail = "Cleaning and validating addresses...")
+        # Clean and split rows into matched + error buckets.
+        results <- clean_addresses(df)
+        df_to_save <- results$good_data
+        APP_STATE$error_data <- results$bad_data
+        APP_STATE$processed_data <- df_to_save
 
-      showNotification(
-        paste(
-          "Checked! Found",
-          nrow(df_to_save),
-          "matches and",
-          nrow(results$bad_data),
-          "errors."
-        ),
-        type = "message"
-      )
-    } else {
-      # Pass-through mode stores uploaded rows without address validation.
-      df_to_save <- df
-      APP_STATE$error_data <- NULL
-      APP_STATE$processed_data <- df_to_save
-    }
+        showNotification(
+          paste(
+            "Checked! Found",
+            nrow(df_to_save),
+            "matches and",
+            nrow(results$bad_data),
+            "errors."
+          ),
+          type = "message"
+        )
+      } else {
+        setProgress(0.2, detail = "Preparing data...")
+        # Pass-through mode stores uploaded rows without address validation.
+        df_to_save <- df
+        APP_STATE$error_data <- NULL
+        APP_STATE$processed_data <- df_to_save
+      }
 
-    tryCatch({
-      # Persist processed rows to SQLite under a sanitized table name.
-      db_path <- censusight_data_path("my_app_database.sqlite")
-      con <- dbConnect(RSQLite::SQLite(), db_path)
+      setProgress(0.7, detail = "Saving to database...")
+      tryCatch({
+        # Persist processed rows to SQLite under a sanitized table name.
+        db_path <- censusight_data_path("my_app_database.sqlite")
+        con <- dbConnect(RSQLite::SQLite(), db_path)
 
-      raw_filename <- input$csv_upload$name
-      clean_table_name <- gsub(
-        "[^A-Za-z0-9_]",
-        "_",
-        gsub("\\.csv$", "", raw_filename, ignore.case = TRUE)
-      )
+        raw_filename <- input$csv_upload$name
+        clean_table_name <- gsub(
+          "[^A-Za-z0-9_]",
+          "_",
+          gsub("\\.csv$", "", raw_filename, ignore.case = TRUE)
+        )
 
-      dbWriteTable(con, clean_table_name, df_to_save, overwrite = TRUE)
-      dbDisconnect(con)
+        dbWriteTable(con, clean_table_name, df_to_save, overwrite = TRUE)
+        dbDisconnect(con)
 
-      output$status_message <- renderText(
-        paste("Success! Valid data stored in table:", clean_table_name)
-      )
-    }, error = function(e) {
-      showNotification(paste("Database error:", e$message), type = "error")
+        setProgress(1.0, detail = "Complete!")
+        output$status_message <- renderText(
+          paste("Success! Valid data stored in table:", clean_table_name)
+        )
+      }, error = function(e) {
+        showNotification(paste("Database error:", e$message), type = "error")
+      })
     })
   })
 
@@ -1148,49 +1191,53 @@ server <- function(input, output, session) {
   observeEvent(input$preview_btn, {
     req(input$census_year, input$census_dataset)
 
-    selected_vars <- unique(input$census_vars)
+    withProgress(message = "Building variable preview...", value = 0.3, min = 0, max = 1, {
+      selected_vars <- unique(input$census_vars)
 
-    # Empty selection produces an instructional preview row.
-    if (length(selected_vars) == 0) {
-      APP_STATE$preview_selection <- data.frame(
-        Note = "No Census variables selected. Choose variable(s), then click Preview.",
-        stringsAsFactors = FALSE
-      )
+      # Empty selection produces an instructional preview row.
+      if (length(selected_vars) == 0) {
+        APP_STATE$preview_selection <- data.frame(
+          Note = "No Census variables selected. Choose variable(s), then click Preview.",
+          stringsAsFactors = FALSE
+        )
+        output$status_message <- renderText(
+          "Preview shows current Census selection. No variables selected yet."
+        )
+        return()
+      }
+
+      setProgress(0.6, detail = "Fetching variable metadata...")
+      # Build metadata-only preview table for currently selected variables.
+      vars <- var_list()
+      selected_meta <- vars %>%
+        dplyr::filter(.data$name %in% selected_vars) %>%
+        dplyr::select(dplyr::all_of(c("name", "label", "concept")))
+
+      if (nrow(selected_meta) == 0) {
+        selected_meta <- data.frame(
+          name = selected_vars,
+          label = NA_character_,
+          concept = NA_character_,
+          stringsAsFactors = FALSE
+        )
+      }
+
+      APP_STATE$preview_selection <- selected_meta %>%
+        dplyr::mutate(
+          year = as.character(input$census_year),
+          dataset = as.character(input$census_dataset)
+        ) %>%
+        dplyr::select(year, dataset, name, label, concept)
+
+      setProgress(1.0)
       output$status_message <- renderText(
-        "Preview shows current Census selection. No variables selected yet."
+        paste0(
+          "Previewing ",
+          nrow(APP_STATE$preview_selection),
+          " selected Census variable(s)."
+        )
       )
-      return()
-    }
-
-    # Build metadata-only preview table for currently selected variables.
-    vars <- var_list()
-    selected_meta <- vars %>%
-      dplyr::filter(.data$name %in% selected_vars) %>%
-      dplyr::select(dplyr::all_of(c("name", "label", "concept")))
-
-    if (nrow(selected_meta) == 0) {
-      selected_meta <- data.frame(
-        name = selected_vars,
-        label = NA_character_,
-        concept = NA_character_,
-        stringsAsFactors = FALSE
-      )
-    }
-
-    APP_STATE$preview_selection <- selected_meta %>%
-      dplyr::mutate(
-        year = as.character(input$census_year),
-        dataset = as.character(input$census_dataset)
-      ) %>%
-      dplyr::select(year, dataset, name, label, concept)
-
-    output$status_message <- renderText(
-      paste0(
-        "Previewing ",
-        nrow(APP_STATE$preview_selection),
-        " selected Census variable(s)."
-      )
-    )
+    })
   })
 
   # --- 3.16 Main Census Join Pipeline ---
@@ -1207,14 +1254,14 @@ server <- function(input, output, session) {
     df <- uploaded_data()
     APP_STATE$preview_selection <- NULL
 
+    join_prog <- shiny::Progress$new(session, min = 0, max = 1)
+    on.exit(join_prog$close(), add = TRUE)
+    join_prog$set(message = "Running Census join...", value = 0.05, detail = "Pre-cleaning addresses...")
+
     # Normalize input fields and enrich GEOIDs from local lookup/geocoder.
     df <- preclean_for_join(df)
-    showNotification(
-      "Applied automatic address cleaning before join.",
-      type = "message",
-      duration = 4
-    )
 
+    join_prog$set(value = 0.15, detail = "Looking up GEOIDs...")
     geoid_enrichment <- attach_geoid_from_lookup(
       df,
       address_lookup_db_path,
@@ -1228,7 +1275,7 @@ server <- function(input, output, session) {
       showNotification(geoid_enrichment$message, type = "warning")
     }
 
-    # Resolve selected variable IDs and pull associated metadata.
+    join_prog$set(value = 0.25, detail = "Validating Census variables...")
     selected_vars <- unique(as.character(input$census_vars))
     selected_vars <- selected_vars[nzchar(selected_vars)]
     vars_metadata <- ensure_variable_columns(var_list())
@@ -1503,6 +1550,7 @@ server <- function(input, output, session) {
     # Prepare friendly output headers before join output is rendered.
     readable_name_map <- build_readable_census_name_map(selected_vars, vars_metadata)
 
+    join_prog$set(value = 0.4, detail = "Fetching Census data from API...")
     # Internal fetch wrapper centralizes ACS vs decennial branching.
     fetch_census <- function(
       geography_choice,
@@ -1638,6 +1686,7 @@ server <- function(input, output, session) {
     # ACS and decennial responses use different value columns.
     join_is_acs <- grepl("^acs", ds)
 
+    join_prog$set(value = 0.75, detail = "Joining Census data to upload...")
     # Pivot long Census response into one-row-per-GEOID wide format.
     if (join_is_acs) {
       census_wide <- census_pull %>%
@@ -1788,6 +1837,7 @@ server <- function(input, output, session) {
     # Apply friendly header mapping and publish final joined output.
     joined_df <- apply_readable_census_headers(joined_df, readable_name_map)
 
+    join_prog$set(value = 1.0, detail = "Complete!")
     APP_STATE$joined_data <- joined_df
     output$status_message <- renderText(
       paste0(
