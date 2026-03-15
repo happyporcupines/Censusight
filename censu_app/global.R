@@ -94,6 +94,36 @@ censusight_data_path <- function(..., must_exist = FALSE) {
 }
 
 # Source helpers before ui.R and server.R are loaded.
+# When running in Shinylive/WebR the SQLite lookup database cannot be bundled
+# inside app.json (202 MB). Instead, it is served as a static asset alongside
+# the site and downloaded into the virtual filesystem on first startup.
+local({
+  target <- file.path(censusight_app_dir, "data", "address_geoid.sqlite")
+  is_webr <- startsWith(
+    normalizePath(getwd(), winslash = "/", mustWork = FALSE),
+    "/home/web_user"
+  )
+  if (is_webr && !file.exists(target)) {
+    sqlite_url <- getOption(
+      "censusight.sqlite_url",
+      "https://happyporcupines.github.io/Censusight/data/address_geoid.sqlite"
+    )
+    dir.create(dirname(target), showWarnings = FALSE, recursive = TRUE)
+    cat(sprintf(
+      "Censusight: downloading address lookup database from %s ...\n", sqlite_url
+    ))
+    tryCatch(
+      {
+        utils::download.file(sqlite_url, target, mode = "wb", quiet = TRUE)
+        cat("Censusight: lookup database ready.\n")
+      },
+      error = function(e) {
+        message("Censusight: could not download lookup database — ", conditionMessage(e))
+      }
+    )
+  }
+})
+
 source(file.path(censusight_app_dir, "helpers.R"), local = FALSE)
 
 # nolint end

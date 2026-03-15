@@ -2,6 +2,9 @@
 *.sqlite
 *.db
 
+# Allow the address lookup DB to be committed via Git LFS
+!censu_app/data/address_geoid.sqlite
+
 # R session artifacts
 .Rhistory
 .RData
