@@ -41,6 +41,14 @@ server <- function(input, output, session) {
   }, once = TRUE)
 
   # --- 3.3 Shared Progress/Quota Utilities ---
+
+  # Fires the JS busy-state toggle so the UI blocks during any long-running
+  # server operation. Use set_busy_state(TRUE) at the top of an observer and
+  # set_busy_state(FALSE) via on.exit() to guarantee cleanup on error.
+  set_busy_state <- function(busy) {
+    session$sendCustomMessage("set_busy", list(busy = isTRUE(busy)))
+  }
+
   # Wrapper keeps progress-bar updates consistent across all server handlers.
   update_progress_bar <- function(id, value, status, title = NULL, total = NULL) {
     args <- list(
@@ -310,6 +318,7 @@ server <- function(input, output, session) {
 
       n_ds <- nrow(data_for_year)
       catalog_prog <- if (any_needs_fetch) {
+        set_busy_state(TRUE)
         p <- shiny::Progress$new(session, min = 0, max = n_ds)
         p$set(
           message = paste0("Loading variable catalog for ", selected_year, "..."),
@@ -353,6 +362,7 @@ server <- function(input, output, session) {
       }
 
       if (!is.null(catalog_prog)) catalog_prog$close()
+      if (any_needs_fetch) set_busy_state(FALSE)
 
       # Update the variable cache and invalid dataset keys based on the results of metadata loading attempts
       # Then filter the catalog data to only include datasets with valid metadata before updating the dataset selection input.
@@ -445,6 +455,8 @@ server <- function(input, output, session) {
 
     var_prog <- shiny::Progress$new(session, min = 0, max = 1)
     on.exit(var_prog$close(), add = TRUE)
+    on.exit(set_busy_state(FALSE), add = TRUE)
+    set_busy_state(TRUE)
     var_prog$set(
       message = paste0("Loading ", ds, " variables (", year_raw, ")..."),
       value = 0.1,
@@ -1177,6 +1189,9 @@ server <- function(input, output, session) {
     req(uploaded_data())
     df <- uploaded_data()
 
+    set_busy_state(TRUE)
+    on.exit(set_busy_state(FALSE), add = TRUE)
+
     # Entering process mode clears any previous variable preview snapshot.
     APP_STATE$preview_selection <- NULL
 
@@ -1238,6 +1253,9 @@ server <- function(input, output, session) {
   observeEvent(input$preview_btn, {
     req(input$census_year, input$census_dataset)
 
+    set_busy_state(TRUE)
+    on.exit(set_busy_state(FALSE), add = TRUE)
+
     withProgress(message = "Building variable preview...", value = 0.3, min = 0, max = 1, {
       selected_vars <- unique(input$census_vars)
 
@@ -1296,6 +1314,9 @@ server <- function(input, output, session) {
   # 5) Publish joined results and status messaging
   observeEvent(input$run_join, {
     req(uploaded_data())
+
+    set_busy_state(TRUE)
+    on.exit(set_busy_state(FALSE), add = TRUE)
 
     # Clear selection preview because this action transitions to join output.
     df <- uploaded_data()
