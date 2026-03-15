@@ -319,15 +319,45 @@ extract_geography_tokens <- function(geography_text) {
 }
 
 # Returns TRUE when a variable can be queried for the target geography.
+# Variables with missing/unknown geography metadata are only allowed at state
+# level; sub-state joins require explicit confirmation to prevent empty results.
 variable_available_for_geography <- function(geography_text, target_geography) {
   target <- normalize_geography_token(target_geography)
   tokens <- extract_geography_tokens(geography_text)
 
   if (length(tokens) == 0) {
-    return(TRUE)
+    return(identical(target, "state"))
   }
 
   target %in% tokens
+}
+
+# Fills in the geography column for variables that have NA/empty geography,
+# using documented dataset-level coverage as a conservative default.
+# This removes "levels: unknown" from the UI and enables accurate filtering.
+fill_dataset_geography <- function(vars_df, dataset_name) {
+  if (!is.data.frame(vars_df) || nrow(vars_df) == 0) {
+    return(vars_df)
+  }
+
+  ds <- normalize_dataset_name(dataset_name)
+
+  default_geo <- switch(
+    ds,
+    "acs5"  = "state, county, tract, block group, zcta",
+    "acs1"  = "state, county",
+    "acs3"  = "state, county",
+    "acsse" = "state, county",
+    "pl"    = "state, county, tract, block group",
+    "dhc"   = "state, county, tract, block group",
+    "sf1"   = "state, county, tract, block group",
+    "sf3"   = "state, county, tract",
+    "state"
+  )
+
+  miss <- is.na(vars_df$geography) | !nzchar(trimws(as.character(vars_df$geography)))
+  vars_df$geography[miss] <- default_geo
+  vars_df
 }
 
 # Detects Puerto Rico-specific variables based on label/concept text.

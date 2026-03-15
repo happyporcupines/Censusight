@@ -406,12 +406,15 @@ server <- function(input, output, session) {
       if (cache_key %in% bad_keys) {
         invalid_dataset_keys(setdiff(bad_keys, cache_key))
       }
-      return(ensure_variable_columns(existing_cache[[cache_key]]))
+      return(fill_dataset_geography(ensure_variable_columns(existing_cache[[cache_key]]), ds))
     }
 
     tryCatch(
       {
-        vars <- ensure_variable_columns(load_variables(year_raw, ds, cache = TRUE))
+        vars <- fill_dataset_geography(
+          ensure_variable_columns(load_variables(year_raw, ds, cache = TRUE)),
+          ds
+        )
         if (is.data.frame(vars) && nrow(vars) > 0) {
           existing_cache[[cache_key]] <- vars
           variable_cache(existing_cache)
@@ -475,8 +478,10 @@ server <- function(input, output, session) {
     vars <- ensure_variable_columns(vars)
 
     # Determine geography capabilities implied by selected dataset type.
+    # county_capable is restricted to surveys with complete county coverage;
+    # ACS 1-Year/3-Year/ACSSE cover only large counties so restrict to state.
     ds <- normalize_dataset_name(input$census_dataset)
-    county_capable <- !is.na(ds)
+    county_capable <- !is.na(ds) && ds %in% c("acs5", "pl", "dhc", "sf1", "sf3")
     tract_capable <- !is.na(ds) && ds %in% c("acs5", "pl", "dhc", "sf1", "sf3")
     zcta_capable <- !is.na(ds) && ds %in% c("acs5")
 
@@ -937,8 +942,10 @@ server <- function(input, output, session) {
     req(isTRUE(USER$logged_in))
 
     # Re-evaluate available geography options whenever dataset/upload changes.
+    # county_capable is restricted to surveys with complete county coverage;
+    # ACS 1-Year/3-Year/ACSSE cover only large counties so restrict to state.
     ds <- normalize_dataset_name(input$census_dataset)
-    county_capable <- !is.na(ds)
+    county_capable <- !is.na(ds) && ds %in% c("acs5", "pl", "dhc", "sf1", "sf3")
     tract_capable <- !is.na(ds) && ds %in% c("acs5", "pl", "dhc", "sf1", "sf3")
     zcta_capable <- !is.na(ds) && ds %in% c("acs5")
 
@@ -1329,7 +1336,9 @@ server <- function(input, output, session) {
 
     # Determine effective geography from dataset capability + upload columns,
     # then optionally apply user override with guardrail notifications.
-    county_capable <- !is.na(ds)
+    # county_capable restricted to surveys with complete coverage (same logic
+    # as the join_geography dropdown and variable observer above).
+    county_capable <- !is.na(ds) && ds %in% c("acs5", "pl", "dhc", "sf1", "sf3")
     tract_capable <- ds %in% c("acs5", "pl", "dhc", "sf1", "sf3")
     zcta_capable <- ds %in% c("acs5")
     auto_preferred_geography <- if (has_geoid && tract_capable) {
