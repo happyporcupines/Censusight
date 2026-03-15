@@ -26,84 +26,43 @@ clean_addresses <- function(df) {
   }
 
   # Standardize address and ZIP text before lookup matching.
-  df$cleaned_address <- normalize_address_text(df$address)
   df$address <- toupper(trimws(gsub("\\s+", " ", as.character(df$address))))
+  df$cleaned_address <- normalize_address_text(df$address)
 
   zip_col <- names(df)[tolower(names(df)) %in% c("zip", "zipcode", "zip_code")]
   has_zip <- length(zip_col) >= 1
 
-  # Normalize ZIP to 5 numeric digits when present; mark invalid entries as NA.
+  # Normalize ZIP to 5 numeric digits when present so later ZIP/ZCTA joins
+  # can still use valid rows, but do not reject successful parcel matches for
+  # bad ZIP values alone.
   if (has_zip) {
     zip_values <- as.character(df[[zip_col[1]]])
     zip_digits <- substr(gsub("[^0-9]", "", zip_values), 1, 5)
     valid_zip <- !is.na(zip_digits) & nchar(zip_digits) == 5
     df[[zip_col[1]]] <- ifelse(valid_zip, zip_digits, NA_character_)
-  } else {
-    valid_zip <- rep(TRUE, nrow(df))
   }
 
   lookup_db_path <- censusight_data_path("address_geoid.sqlite", must_exist = TRUE)
-  lookup_tbl <- data.frame(
-    normalized_address = character(0),
-    geoid = character(0),
-    stringsAsFactors = FALSE
-  )
-  lookup_db_ok <- FALSE
+  lookup_db_ok <- file.exists(lookup_db_path)
 
-  # Probe local lookup cache first; if unavailable, continue with empty lookup
-  # and mark reason in error report later.
-  if (file.exists(lookup_db_path)) {
-    lookup_tbl <- tryCatch({
-      con <- dbConnect(RSQLite::SQLite(), lookup_db_path)
-      on.exit(dbDisconnect(con), add = TRUE)
-
-      # Query in chunks to avoid oversized SQL IN-clause parameter lists.
-      normalized_addresses <- unique(
-        df$cleaned_address[!is.na(df$cleaned_address) & nzchar(df$cleaned_address)]
-      )
-
-      if (length(normalized_addresses) == 0) {
-        data.frame(
-          normalized_address = character(0),
-          geoid = character(0),
-          stringsAsFactors = FALSE
-        )
-      } else {
-        chunks <- split(
-          normalized_addresses,
-          ceiling(seq_along(normalized_addresses) / 900)
-        )
-        out <- lapply(chunks, function(chunk) {
-          placeholders <- paste(rep("?", length(chunk)), collapse = ",")
-          sql <- paste0(
-            "SELECT normalized_address, geoid FROM address_geoid_lookup WHERE normalized_address IN (",
-            placeholders,
-            ")"
-          )
-          dbGetQuery(con, sql, params = as.list(chunk))
-        })
-        dplyr::bind_rows(out)
-      }
-    }, error = function(e) {
-      data.frame(
-        normalized_address = character(0),
-        geoid = character(0),
-        stringsAsFactors = FALSE
-      )
-    })
-
-    lookup_db_ok <- TRUE
+  # Use the same local lookup path as the Census join so upload processing,
+  # parcel checks, and the join workflow classify addresses the same way.
+  if (lookup_db_ok) {
+    enrichment <- attach_geoid_from_lookup(
+      df,
+      lookup_db_path,
+      geocode_limit = 0
+    )
+    df <- enrichment$data
+  } else if (!"geoid" %in% names(df)) {
+    df$geoid <- NA_character_
   }
 
-  # Remove duplicate lookup keys before joining into uploaded rows.
-  lookup_tbl <- lookup_tbl %>%
-    dplyr::distinct(.data$normalized_address, .keep_all = TRUE)
-
-  df <- df %>%
-    dplyr::left_join(lookup_tbl, by = c("cleaned_address" = "normalized_address"))
-
-  # Ensure GEOID exists, normalize to digits-only, and classify valid matches.
-  if (!"geoid" %in% names(df)) {
+  # Normalize case-insensitive GEOID output from the shared enrichment path.
+  geoid_col <- names(df)[tolower(names(df)) == "geoid"]
+  if (length(geoid_col) >= 1) {
+    df$geoid <- as.character(df[[geoid_col[1]]])
+  } else {
     df$geoid <- NA_character_
   }
 
@@ -114,7 +73,7 @@ clean_addresses <- function(df) {
   )
   address_match <- !is.na(df$geoid) & nchar(df$geoid) >= 11
   has_clean_address <- !is.na(df$cleaned_address) & nzchar(df$cleaned_address)
-  good_idx <- address_match & has_clean_address & valid_zip
+  good_idx <- address_match & has_clean_address
 
   # Split output into valid/invalid sets consumed by process/join workflows.
   matches <- df[good_idx, , drop = FALSE]
@@ -126,13 +85,9 @@ clean_addresses <- function(df) {
       !has_clean_address[!good_idx],
       "Missing or empty address",
       ifelse(
-        !address_match[!good_idx],
-        ifelse(
-          !lookup_db_ok,
-          paste0("Lookup database not found: ", lookup_db_path),
-          "Address did not match parcel GEOID lookup"
-        ),
-        "Invalid ZIP code"
+        !lookup_db_ok,
+        paste0("Lookup database not found: ", lookup_db_path),
+        "Address did not match parcel GEOID lookup"
       )
     )
   }

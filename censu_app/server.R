@@ -960,9 +960,9 @@ server <- function(input, output, session) {
     }
 
     card(
-      card_header("🚨 Error Report: Invalid Addresses", class = "bg-danger text-white"),
+      card_header("🚨 Error Report: Rejected Rows", class = "bg-danger text-white"),
       card_body(
-        p("The following rows did not match our Wisconsin parcel database:"),
+        p("The following rows could not be processed. See error_reason for the specific issue."),
         tableOutput("error_table"),
         downloadButton("download_errors", "Download Error Report", class = "btn-warning mt-2")
       )
@@ -1193,9 +1193,9 @@ server <- function(input, output, session) {
           paste(
             "Checked! Found",
             nrow(df_to_save),
-            "matches and",
+            "usable row(s) and",
             nrow(results$bad_data),
-            "errors."
+            "rejected row(s)."
           ),
           type = "message"
         )
