@@ -138,6 +138,8 @@ server <- function(input, output, session) {
   available_datasets <- reactiveVal(NULL)
   variable_cache <- reactiveVal(list())
   invalid_dataset_keys <- reactiveVal(character(0))
+  # TRUE while the census variable list is being populated; used for UI loading indicator.
+  vars_loading_flag <- reactiveVal(TRUE)
 
   # Load persisted variable metadata cache if available.
   if (file.exists(variable_catalog_path)) {
@@ -389,6 +391,10 @@ server <- function(input, output, session) {
       character(0)
     }
 
+    # Mark variables as loading. This fires before the client responds with the
+    # new census_dataset value, so the loading indicator is guaranteed to be
+    # visible during the subsequent variable-population flush.
+    vars_loading_flag(TRUE)
     freezeReactiveValue(input, "census_dataset")
     updateSelectInput(
       session,
@@ -509,6 +515,7 @@ server <- function(input, output, session) {
         selected = character(0),
         server = TRUE
       )
+      vars_loading_flag(FALSE)
       return()
     }
 
@@ -523,19 +530,24 @@ server <- function(input, output, session) {
     zcta_capable <- !is.na(ds) && ds %in% c("acs5")
 
     # Prefer processed data (post-cleaning) when available; otherwise raw upload.
-    df <- uploaded_data()
+    # isolate() prevents CSV uploads from re-triggering this expensive observer —
+    # only year/dataset/geography changes should rebuild the variable list.
+    df <- isolate(uploaded_data())
     if (exists("APP_STATE", inherits = FALSE) &&
-      !is.null(APP_STATE$processed_data) &&
-      is.data.frame(APP_STATE$processed_data)) {
-      df <- APP_STATE$processed_data
+      !is.null(isolate(APP_STATE$processed_data)) &&
+      is.data.frame(isolate(APP_STATE$processed_data))) {
+      df <- isolate(APP_STATE$processed_data)
     }
 
     # Inspect upload columns to infer whether GEOID and/or ZIP joins are possible.
+    # An 'address' column counts as GEOID-capable because the join pipeline
+    # resolves addresses to tract GEOIDs via the parcel lookup database.
     has_geoid <- FALSE
     has_zip <- FALSE
     if (!is.null(df) && is.data.frame(df)) {
+      has_address <- length(names(df)[tolower(names(df)) == "address"]) == 1
       geoid_col <- names(df)[tolower(names(df)) == "geoid"]
-      has_geoid <- length(geoid_col) >= 1
+      has_geoid <- has_address || length(geoid_col) >= 1
 
       zip_col <- names(df)[tolower(names(df)) %in% c("zip", "zipcode", "zip_code")]
       if (length(zip_col) >= 1) {
@@ -604,6 +616,7 @@ server <- function(input, output, session) {
         selected = character(0),
         server = TRUE
       )
+      vars_loading_flag(FALSE)
       return()
     }
 
@@ -640,11 +653,35 @@ server <- function(input, output, session) {
       "census_vars",
       choices = choice_vec,
       selected = valid_selected,
-      server = TRUE
+      server = TRUE,
+      options = list(
+        loadThrottle = 1,
+        preload = "focus"
+      )
     )
+    vars_loading_flag(FALSE)
   })
 
   # --- 3.8 UI Status Outputs (Dataset Count + API Gauge) ---
+    # Inline loading indicator shown beneath the census variable selectize.
+    # Visible between a year/dataset change and when choices finish populating.
+    output$census_vars_loading_ui <- renderUI({
+      if (vars_loading_flag()) {
+        div(
+          class = "text-info small mt-1",
+          style = "display: flex; align-items: center; gap: 6px;",
+          tags$span(
+            class = "spinner-border spinner-border-sm",
+            role = "status",
+            style = "width: .75rem; height: .75rem; border-width: 2px;"
+          ),
+          "Loading census variables — this may take up to 30 seconds..."
+        )
+      } else {
+        NULL
+      }
+    })
+
   output$census_dataset_count <- renderText({
     req(available_datasets(), input$census_year)
 
@@ -890,8 +927,13 @@ server <- function(input, output, session) {
                 "Select & Search Census Variables",
                 choices = NULL,
                 multiple = TRUE,
-                options = list(placeholder = "Type to search...")
-              )
+                options = list(
+                  placeholder = "Type to search...",
+                  loadThrottle = 1,
+                  preload = "focus"
+                )
+              ),
+              uiOutput("census_vars_loading_ui")
             )
           ),
           card(
@@ -996,8 +1038,13 @@ server <- function(input, output, session) {
     has_zip <- FALSE
 
     if (!is.null(df) && is.data.frame(df)) {
+      # Treat an 'address' column as GEOID-capable: the join pipeline runs
+      # attach_geoid_from_lookup which converts addresses to tract GEOIDs.
+      # Uploaded CSVs will never have pre-existing GEOIDs, but any CSV with
+      # an address column can produce tract-level GEOIDs via the parcel lookup.
+      has_address <- length(names(df)[tolower(names(df)) == "address"]) == 1
       geoid_col <- names(df)[tolower(names(df)) == "geoid"]
-      has_geoid <- length(geoid_col) >= 1
+      has_geoid <- has_address || length(geoid_col) >= 1
 
       zip_col <- names(df)[tolower(names(df)) %in% c("zip", "zipcode", "zip_code")]
       if (length(zip_col) >= 1) {
@@ -1364,9 +1411,28 @@ server <- function(input, output, session) {
       return()
     }
 
-    # Discover available join keys from upload data (GEOID and ZIP). 
+    # Discover available join keys from upload data (GEOID and ZIP).
+    # has_geoid is TRUE only when the GEOID column contains at least one
+    # valid 11-digit tract-level GEOID (added by attach_geoid_from_lookup).
+    # Column presence alone is not sufficient — all-NA columns are treated
+    # as no GEOID so the join properly falls back to ZIP/state geography.
     geoid_col <- names(df)[tolower(names(df)) == "geoid"]
-    has_geoid <- length(geoid_col) >= 1
+    has_geoid <- length(geoid_col) >= 1 && {
+      geoid_vals <- gsub("[^0-9]", "", as.character(df[[geoid_col[1]]]))
+      any(!is.na(geoid_vals) & nchar(geoid_vals) >= 11, na.rm = TRUE)
+    }
+    if (length(geoid_col) >= 1 && !has_geoid) {
+      showNotification(
+        paste0(
+          "No addresses could be matched to a parcel GEOID. ",
+          "The join will use ZIP code (ZCTA) or state-level data instead. ",
+          "Ensure the 'address' column contains Wisconsin addresses that are ",
+          "in the parcel lookup database."
+        ),
+        type = "warning",
+        duration = 12
+      )
+    }
     zip_col <- names(df)[tolower(names(df)) %in% c("zip", "zipcode", "zip_code")]
     has_zip <- length(zip_col) >= 1
 
